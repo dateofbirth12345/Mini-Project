@@ -1,11 +1,11 @@
 project_name: Marine Surface Debris Detection System
 
 dataset:
-  root: "C:/Users/AlgoQuant-HR-Admin/Downloads/5151941"
+  root: "C:/Users/AlgoQuant-HR-Admin/Downloads/CleanSea/clensea_updated"
   # If your dataset is already in YOLO format, set this to true.
   yolo_format: true
-  # Optional: class names for detection
-  classes: ["debris"]
+  # Class names for detection: fine-tune to distinguish plastics vs non-plastics
+  classes: ["plastic", "non_plastic"]
 
 preprocess:
   image_exts: [".jpg", ".jpeg", ".png"]
@@ -16,11 +16,14 @@ preprocess:
 training:
   framework: yolo # options: yolo, tf-classifier
   model: yolov8n.pt
-  epochs: 50
+  # Train only a few epochs to avoid overfitting when fine-tuning
+  epochs: 8
   imgsz: 640
   batch: 16
   workers: 4
   device: auto
+  # Fine-tuning learning rate (set low for transfer learning)
+  learning_rate: 1e-05
 
 paths:
   processed_dir: data/processed
@@ -34,6 +37,23 @@ inference:
 
 ui:
   map_tiles: "OpenStreetMap"
+
+# Plastic/Non-Plastic Classifier Configuration
+classifier:
+  # Paths to your labeled dataset folders
+  # Place plastic images in the plastic_dir folder
+  # Place non-plastic images in the non_plastic_dir folder
+  plastic_dir: "data/classifier/plastic"
+  non_plastic_dir: "data/classifier/non_plastic"
+  
+  # Path to trained classifier model (will be created after training)
+  model_path: "models/classifier/plastic_classifier_best.pt"
+  
+  # Training parameters
+  epochs: 20
+  batch_size: 32
+  learning_rate: 0.001
+  device: auto  # auto, cuda, or cpu
 
 
 

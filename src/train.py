@@ -19,7 +19,9 @@ def main():
     os.makedirs(runs_dir, exist_ok=True)
 
     model = YOLO(model_name)
-    results = model.train(
+    # Optional learning rate from config for fine-tuning
+    lr = cfg["training"].get("learning_rate") if "learning_rate" in cfg.get("training", {}) else None
+    train_kwargs = dict(
         data=data_yaml,
         epochs=epochs,
         imgsz=imgsz,
@@ -29,6 +31,10 @@ def main():
         project=runs_dir,
         name="yolov8",
     )
+    if lr is not None:
+        train_kwargs["lr"] = float(lr)
+
+    results = model.train(**train_kwargs)
     # Save best weights path to a file for later inference
     best_path = model.ckpt_path if hasattr(model, "ckpt_path") else None
     if best_path is None:

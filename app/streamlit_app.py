@@ -275,24 +275,23 @@ def draw_boxes(image_path: str, boxes: List[dict]) -> Image.Image:
         font = ImageFont.load_default()
     for b in boxes:
         x1, y1, x2, y2 = [int(v) for v in b["xyxy"]]
-        color = _color_for_class(int(b["cls"]))
+        # Use color based on plastic/non-plastic classification
+        color = _color_for_debris_type(b["label"])
         draw.rectangle([(x1, y1), (x2, y2)], outline=color, width=3)
-        label = f"{b['label']} {b['conf']:.2f}"
+        # Show classification type and confidence
+        label = f"{b['label']} ({b.get('type_conf', b['conf']):.2f})"
         tw, th = draw.textlength(label, font=font), 16
         # label background
         draw.rectangle([(x1, max(0, y1 - th - 4)), (x1 + int(tw) + 8, y1)], fill=(0, 0, 0, 160))
         draw.text((x1 + 4, y1 - th - 2), label, fill=(255, 255, 255), font=font)
     return img
-def _color_for_class(cls_id: int) -> Tuple[int, int, int]:
-    palette = [
-        (39, 76, 119),  # deep blue
-        (51, 92, 103),  # teal
-        (237, 125, 49), # orange
-        (120, 94, 240), # purple
-        (35, 166, 213), # sky
-        (23, 190, 187), # cyan
-    ]
-    return palette[cls_id % len(palette)]
+
+def _color_for_debris_type(debris_type: str) -> Tuple[int, int, int]:
+    """Return color based on debris classification (plastic or non-plastic)"""
+    if debris_type.lower() == "plastic":
+        return (255, 20, 147)  # Deep pink/magenta for plastic
+    else:
+        return (255, 165, 0)  # Orange for non-plastic
 st.markdown("---")
 
 # Main Content Tabs
@@ -332,7 +331,7 @@ st.markdown("---")
 # Conditional rendering based on active tab
 if st.session_state.active_tab == "📸 Help Cleanup":
     st.markdown("### 📸 Upload Photos to Detect Marine Debris")
-    st.markdown("Help us identify and locate marine debris by uploading photos from drones, boats, or shorelines. Our AI will analyze the images in real-time.")
+    st.markdown("Help us identify and locate marine debris by uploading photos from drones, boats, or shorelines. Our AI will analyze the images in real-time and classify debris into **Plastic** and **Non-Plastic** categories.")
     
    
     
@@ -351,13 +350,38 @@ if st.session_state.active_tab == "📸 Help Cleanup":
             os.makedirs(tmp_dir, exist_ok=True)
             image_paths: List[str] = []
             for f in uploaded_files:
-                img = Image.open(f).convert("RGB")
+                # Save raw bytes to preserve EXIF (GPS) metadata from uploaded files
+                try:
+                    raw = f.read()
+                except Exception:
+                    raw = f.getbuffer()
                 out_path = os.path.join(tmp_dir, f.name)
-                img.save(out_path)
+                with open(out_path, "wb") as out:
+                    out.write(raw)
                 image_paths.append(out_path)
 
             with st.spinner("🔍 Detecting debris with AI..."):
                 results = predict_on_images(image_paths)
+
+            # Display Map Section FIRST (before per-image results)
+            gps_points = [it["gps"] for it in results if it.get("gps") is not None]
+            if len(gps_points) > 0:
+                st.markdown("### 🗺️ Detection Map")
+                first_lat, first_lon = gps_points[0]  # type: ignore[index]
+                m = folium.Map(location=[first_lat, first_lon], tiles="OpenStreetMap", zoom_start=11)
+                for it in results:
+                    if it.get("gps") is not None:
+                        lat, lon = it["gps"]
+                        folium.Marker(
+                            location=[lat, lon],
+                            popup=f"📷 {os.path.basename(it['image_path'])}",
+                            icon=folium.Icon(color="red", icon="camera", prefix='fa'),
+                        ).add_to(m)
+                st_folium(m, width=None, height=400)
+                st.markdown("---")
+            else:
+                st.info("📍 No GPS data in uploaded photos. Enable camera location services to see the map.")
+                st.markdown("---")
 
             for item in results:
                 st.markdown(f"**📷 {os.path.basename(item['image_path'])}**")
@@ -367,19 +391,62 @@ if st.session_state.active_tab == "📸 Help Cleanup":
                 else:
                     vis = draw_boxes(item["image_path"], item["boxes"])
                     st.image(vis, use_container_width=True)
+                    
+                    # Count plastic vs non-plastic
+                    plastic_count = sum(1 for b in item["boxes"] if b["label"].lower() == "plastic")
+                    non_plastic_count = len(item["boxes"]) - plastic_count
+                    
+                    # Display statistics
+                    col_stat1, col_stat2 = st.columns(2)
+                    with col_stat1:
+                        st.metric("🔴 Plastic Debris", plastic_count, help="Number of plastic items detected")
+                    with col_stat2:
+                        st.metric("🟠 Non-Plastic Debris", non_plastic_count, help="Number of non-plastic items detected")
+                    
+                    # Display individual detections
+                    st.markdown("**Detections:**")
                     st.markdown(
                         " ".join(
                             [
-                                f"<span class='metric-pill'>{b['label']} · {b['conf']:.2f}</span>"
-                                for b in item["boxes"][:6]
+                                f"<span style='padding: 0.3rem 0.8rem; margin: 0.2rem; border-radius: 20px; background: {'#FF1493' if b['label'].lower() == 'plastic' else '#FFA500'}; color: white; font-weight: 600;'>{b['label'].upper()} ({b.get('type_conf', b['conf']):.2f})</span>"
+                                for b in item["boxes"]
                             ]
                         ),
                         unsafe_allow_html=True,
                     )
-                st.markdown(
-                    f"<div class='caption'>📍 GPS Location: {item['gps'] if item['gps'] else 'Not available (Enable location services)'}</div>",
-                    unsafe_allow_html=True
-                )
+                # Show GPS info and provide registration option only when GPS is present
+                if item.get("gps"):
+                    lat, lon = item["gps"]
+                    st.markdown(
+                        f"<div class='caption'>📍 GPS Location: {lat:.6f}, {lon:.6f}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    # Registration button (only for geotagged images)
+                    col_a, col_b = st.columns([3, 1])
+                    with col_b:
+                        reg_key = f"register_{os.path.basename(item['image_path'])}"
+                        if st.button("Register Location", key=reg_key):
+                            import csv
+                            from datetime import datetime
+
+                            os.makedirs(os.path.join("data"), exist_ok=True)
+                            reg_path = os.path.join("data", "registrations.csv")
+                            file_exists = os.path.isfile(reg_path)
+                            with open(reg_path, "a", newline="", encoding="utf-8") as csvf:
+                                writer = csv.writer(csvf)
+                                if not file_exists:
+                                    writer.writerow(["timestamp", "image", "lat", "lon", "labels", "det_conf_mean"])
+                                labels = ",".join([b["label"] for b in item.get("boxes", [])])
+                                confs = [b.get("conf", 0.0) for b in item.get("boxes", [])]
+                                mean_conf = sum(confs) / len(confs) if confs else 0.0
+                                writer.writerow([datetime.utcnow().isoformat(), os.path.basename(item["image_path"]), f"{lat:.6f}", f"{lon:.6f}", labels, f"{mean_conf:.3f}"])
+                            st.success("Location registered ✅")
+                else:
+                    st.markdown(
+                        f"<div class='caption'>📍 GPS Location: Not available (Enable camera/location services)</div>",
+                        unsafe_allow_html=True,
+                    )
                 st.divider()
     
     with col2:
@@ -393,24 +460,6 @@ if st.session_state.active_tab == "📸 Help Cleanup":
         - Higher confidence → fewer, stronger detections
         - Adjust based on your image quality
         """)
-        
-        if uploaded_files:
-            gps_points = [it["gps"] for it in results if it["gps"] is not None]
-            st.markdown("### 🗺️ Detection Map")
-            if len(gps_points) > 0:
-                first_lat, first_lon = gps_points[0]  # type: ignore[index]
-                m = folium.Map(location=[first_lat, first_lon], tiles="OpenStreetMap", zoom_start=11)
-                for it in results:
-                    if it["gps"] is not None:
-                        lat, lon = it["gps"]
-                        folium.Marker(
-                            location=[lat, lon],
-                            popup=f"📷 {os.path.basename(it['image_path'])}",
-                            icon=folium.Icon(color="red", icon="camera", prefix='fa'),
-                        ).add_to(m)
-                st_folium(m, width=None, height=400)
-            else:
-                st.warning("📍 No GPS data found in uploaded photos. Enable camera location services to see pins on the map.")
 
 elif st.session_state.active_tab == "💙 Donate":
     st.markdown("### 💙 Support Our Ocean Conservation Mission")
